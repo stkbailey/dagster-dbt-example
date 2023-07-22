@@ -18,7 +18,7 @@ def test_dbt_compile_job():
                 AD_HOC_OP_NAME: {
                     "config": {
                         "command": "compile",
-                        "args": "--models applications",
+                        "args": "--models group_1",
                     }
                 }
             }

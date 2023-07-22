@@ -3,12 +3,9 @@ import json
 
 from dagster import (
     Definitions,
-    DagsterEvent,
-    asset,
     OpExecutionContext,
     op,
     job,
-    RunConfig,
     AssetKey,
     BindResourcesToJobs,
     Output,
@@ -22,9 +19,7 @@ from dagster_dbt import (
     DagsterDbtCliHandledRuntimeError,
     DagsterDbtCliRuntimeError,
     dbt_assets,
-    DbtManifestAssetSelection,
     build_dbt_asset_selection,
-    get_asset_key_for_model,
 )
 from typing import Mapping, Any, List, Dict
 
@@ -58,6 +53,7 @@ def prepare_dbt_args(command: str, args: str, vars: dict):
         sanitized = json.dumps(vars, separators=(",", ":"))
         cli_args.extend(["--vars", sanitized])
     return cli_args
+
 
 def yield_asset_materialization(dagster_event):
     if isinstance(dagster_event, Output):
@@ -101,8 +97,6 @@ def dbt_ad_hoc_cli_op(
         for dagster_event in dbt_task.stream():
             yield_asset_materialization(dagster_event)
 
-        context.log.info("yay")
-
         # handle the results
         run_success = dbt_task.is_successful()
 
@@ -127,6 +121,7 @@ def dbt_ad_hoc_cli_op(
     if not run_success and config.fail_job_on_error:
         raise Exception("dbt run was unsuccessful.")
 
+    # dbt op needs to return an output, but assets do not
     yield Output(value=run_results)
 
 
@@ -135,22 +130,22 @@ def dbt_ad_hoc_cli_job():
     dbt_ad_hoc_cli_op()
 
 
+class DbtAdHocAssetConfig(Config):
+    command: str = "build"
+    args: str = "--resource-type model --resource-type seed --resource-type snapshot"
+    vars: Dict[str, str] = {"deployment": "stage"}
+    fail_job_on_error: bool = True
+
+
 @dbt_assets(manifest=DBT_MANIFEST, dagster_dbt_translator=CustomDbtTranslator)
 def default_dbt_project_models(
     context: OpExecutionContext,
+    config: DbtAdHocAssetConfig,
     dbt: DbtCliResource,
 ):
     try:
         # prepare the args
-        args = [
-            "build",
-            "--resource-type",
-            "model",
-            "--resource-type",
-            "seed",
-            "--resource-type",
-            "snapshot",
-        ]
+        args = prepare_dbt_args(config.command, config.args, config.vars)
         context.log.info("Received args: " + str(args))
 
         # run the command
@@ -175,15 +170,35 @@ def default_dbt_project_models(
     except FileNotFoundError:
         context.log.info("No run results found.")
 
-    # succeed or fail the run
     if not run_success:
         raise Exception("dbt run was unsuccessful.")
 
 
+group_1_asset_job = define_asset_job(
+    name="bespoke_asset_job",
+    selection=build_dbt_asset_selection(
+        dbt_assets=[default_dbt_project_models],
+        dbt_select="fqn:*",
+    ),
+)
+
+group_2_asset_job = define_asset_job(
+    name="bespoke_asset_job",
+    selection=build_dbt_asset_selection(
+        dbt_assets=[default_dbt_project_models],
+        dbt_select="fqn:*",
+    ),
+)
+
+job_list = [
+    dbt_ad_hoc_cli_job,
+    # group_1_asset_job,
+    # group_2_asset_job
+]
 
 defs = Definitions(
     assets=[default_dbt_project_models],
-    jobs=BindResourcesToJobs([dbt_ad_hoc_cli_job]),
+    jobs=BindResourcesToJobs(job_list),
     resources={
         "dbt": DbtCliResource(project_dir="dbt_warehouse"),
     },
