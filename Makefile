@@ -14,3 +14,6 @@ test:
 
 format:
 	.venv/bin/black dagster_example tests
+
+compile:
+	.venv/bin/dbt compile --project-dir dbt_warehouse
