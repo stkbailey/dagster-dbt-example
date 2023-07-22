@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "dagster-example"
+version = "0.1.0"
+description = ""
+authors = ["Stephen Bailey <7850417+stkbailey@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{include = "dagster_example"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+dbt-snowflake = "^1.5.2"
+dagster = "^1.4.2"
+dagster-webserver = "^1.4.2"
+dagster-dbt = "^0.20.2"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.7.0"
+pytest = "^7.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
