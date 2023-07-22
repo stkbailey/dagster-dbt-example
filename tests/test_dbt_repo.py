@@ -1,5 +1,5 @@
 from dagster import RunConfig, materialize
-from dagster_example import defs, default_dbt_project_models
+from dagster_example import defs, dbt_warehouse_assets
 
 
 AD_HOC_JOB_NAME = "dbt_ad_hoc_cli_job"
@@ -77,7 +77,7 @@ def test_materialize_models():
     asset_resources = defs.get_repository_def().get_top_level_resources()
 
     # when
-    result = materialize([default_dbt_project_models], resources=asset_resources)
+    result = materialize([dbt_warehouse_assets], resources=asset_resources)
 
     # then
     assert result.success

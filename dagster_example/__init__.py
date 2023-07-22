@@ -1,3 +1,4 @@
+# lots of imports!
 import pathlib
 import json
 
@@ -24,22 +25,24 @@ from dagster_dbt import (
 from typing import Mapping, Any, List, Dict
 
 
+# this "translator" object is used to map dbt nodes/metadata to dagster asset keys/metadata
 class CustomDbtTranslator(DagsterDbtTranslator):
+
     @classmethod
     def get_asset_key(cls, dbt_resource_props) -> AssetKey:
-        db = dbt_resource_props.get("database", "default").lower()
-        schema = dbt_resource_props.get("schema", "public").lower()
+        "Use a database/schema/table designator."
+        db = dbt_resource_props.get("database", "unset").lower()
+        schema = dbt_resource_props.get("schema", "unset").lower()
         name = dbt_resource_props["name"].lower()
-        return AssetKey(["snowflake", db, schema, name])
+        return AssetKey([db, schema, name])
 
     @classmethod
     def get_group_name(cls, dbt_resource_props) -> str:
+        "Create asset groups based on resource type."
         return dbt_resource_props["resource_type"]
-        # if len(dbt_resource_props["fqn"]) > 2:
-        #     return f"{dbt_resource_props['fqn'][1]}__{dbt_resource_props['fqn'][2]}"
-        # return f"{dbt_resource_props['fqn'][0]}"
 
 
+# you are expected to build the manifest prior to loading this file
 manifest_path = pathlib.Path("dbt_warehouse/target/manifest.json")
 DBT_MANIFEST = json.loads(manifest_path.read_text())
 
@@ -67,62 +70,51 @@ def yield_asset_materialization(dagster_event):
 
 
 class DbtAdHocOpConfig(Config):
-    """
-    Configuration for dbt jobs that run through the dagster-dbt CLI.
+    "Configuration for dbt jobs that are run as ops/jobs."
+    command: str = "run"            # The dbt command to run, such as `build`, `run`, `test`, or `seed`.
+    args: str = None                # Any additional command line arguments to pass to the job. To pass in `vars`, use the vars argument.
+    fail_job_on_error: bool = True  # Whether the run itself should fail if the task fails. (e.g. could be used to ignore if a test fails)
+    vars: Dict[str, str] = {}       # A dictionary of variables to pass to the dbt command. These will be passed as `--vars` arguments.
 
-    Args:
-        command: The dbt command to run, such as `build`, `run`, `test`, or `seed`.
-        args: Any additional command line arguments to pass to the job. To pass in `vars`, use the vars argument.
-        fail_job_on_error: Whether the run itself should fail if a single test fails
-        vars: A dictionary of variables to pass to the dbt command. These will be passed as `--vars` arguments.
-    """
 
-    command: str = "run"
-    args: str = None
+class DbtAdHocAssetConfig(Config):
+    "Configuration for dbt jobs that are run as asset materializations."
+    command: str = "build"
+    args: str = "--resource-type model --resource-type seed --resource-type snapshot"
+    vars: Dict[str, str] = {"deployment": "stage"}
     fail_job_on_error: bool = True
-    vars: Dict[str, str] = {}
 
 
 @op
 def dbt_ad_hoc_cli_op(
     context: OpExecutionContext, config: DbtAdHocOpConfig, dbt: DbtCliResource
 ):
+    "This op runs an ad hoc dbt comman via the CLI."
     try:
-        # prepare the args
         args = prepare_dbt_args(config.command, config.args, config.vars)
-        context.log.info("Received args: " + str(args))
-
-        # run the command
         dbt_task = dbt.cli(args, manifest=DBT_MANIFEST, context=context)
         for dagster_event in dbt_task.stream():
             yield_asset_materialization(dagster_event)
 
-        # handle the results
         run_success = dbt_task.is_successful()
-
-    except DagsterDbtCliHandledRuntimeError as e:
-        context.log.exception("Error encountered during dbt run.")
-        run_success = False
 
     except DagsterDbtCliRuntimeError as e:
         context.log.exception("Error encountered during dbt run.")
         run_success = False
 
-    # do something with run results
+    # do something with run results or other artifacts
     try:
         run_results = dbt_task.get_artifact("run_results.json")
-        context.log.info("Creating Slack alerts from result failures")
-        # post_slack_alerts(run_results, context)
+        context.log.info(f"Did {len(run_results['results'])} things.")
     except FileNotFoundError:
         context.log.info("No run results found.")
-        run_results = None
 
     # succeed or fail the run
     if not run_success and config.fail_job_on_error:
         raise Exception("dbt run was unsuccessful.")
 
     # dbt op needs to return an output, but assets do not
-    yield Output(value=run_results)
+    yield Output(None)
 
 
 @job
@@ -130,55 +122,45 @@ def dbt_ad_hoc_cli_job():
     dbt_ad_hoc_cli_op()
 
 
-class DbtAdHocAssetConfig(Config):
-    command: str = "build"
-    args: str = "--resource-type model --resource-type seed --resource-type snapshot"
-    vars: Dict[str, str] = {"deployment": "stage"}
-    fail_job_on_error: bool = True
-
-
 @dbt_assets(manifest=DBT_MANIFEST, dagster_dbt_translator=CustomDbtTranslator)
-def default_dbt_project_models(
+def dbt_warehouse_assets(
     context: OpExecutionContext,
     config: DbtAdHocAssetConfig,
     dbt: DbtCliResource,
 ):
+    "This op runs a dbt command vis a vis the Dagster asset materialization API."
     try:
-        # prepare the args
         args = prepare_dbt_args(config.command, config.args, config.vars)
-        context.log.info("Received args: " + str(args))
-
-        # run the command
         dbt_task = dbt.cli(args, manifest=DBT_MANIFEST, context=context)
         yield from dbt_task.stream()
 
         run_success = dbt_task.is_successful()
 
-    except DagsterDbtCliHandledRuntimeError as e:
-        context.log.exception("Error encountered during dbt run.")
-        run_success = False
-
     except DagsterDbtCliRuntimeError as e:
         context.log.exception("Error encountered during dbt run.")
         run_success = False
 
-    # do something with run results
+    # do something with run results or other artifacts
     try:
         run_results = dbt_task.get_artifact("run_results.json")
-        context.log.info("Creating Slack alerts from result failures")
-        # post_slack_alerts(run_results, context)
+        context.log.info(f"Did {len(run_results['results'])} things.")
     except FileNotFoundError:
         context.log.info("No run results found.")
 
-    if not run_success:
+    # succeed or fail the run
+    if not run_success and config.fail_job_on_error:
         raise Exception("dbt run was unsuccessful.")
 
+all_dbt_assets_job = define_asset_job(
+    name="all_dbt_assets_job",
+    selection=[dbt_warehouse_assets],
+)
 
 # todo: add these asset jobs once we have a way to run add CustomDbtTranslator
 # group_1_asset_job = define_asset_job(
 #     name="bespoke_asset_job",
 #     selection=build_dbt_asset_selection(
-#         dbt_assets=[default_dbt_project_models],
+#         dbt_assets=[dbt_warehouse_assets],
 #         dbt_select="fqn:*",
 #     ),
 # )
@@ -186,19 +168,20 @@ def default_dbt_project_models(
 # group_2_asset_job = define_asset_job(
 #     name="bespoke_asset_job",
 #     selection=build_dbt_asset_selection(
-#         dbt_assets=[default_dbt_project_models],
+#         dbt_assets=[dbt_warehouse_assets],
 #         dbt_select="fqn:*",
 #     ),
 # )
 
 job_list = [
     dbt_ad_hoc_cli_job,
+    all_dbt_assets_job,
     # group_1_asset_job,
     # group_2_asset_job
 ]
 
 defs = Definitions(
-    assets=[default_dbt_project_models],
+    assets=[dbt_warehouse_assets],
     jobs=BindResourcesToJobs(job_list),
     resources={
         "dbt": DbtCliResource(project_dir="dbt_warehouse"),

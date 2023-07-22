@@ -15,5 +15,10 @@ test:
 format:
 	.venv/bin/black dagster_example tests
 
-compile:
-	.venv/bin/dbt compile --project-dir dbt_warehouse
+clean:
+	.venv/bin/dbt clean --project-dir dbt_warehouse
+
+# the manifest must be compiled from within the dbt project
+# for seed file locations to resolve properly
+compile: clean
+	cd dbt_warehouse && ../.venv/bin/dbt compile
