@@ -1,4 +1,0 @@
-dbt-snowflake
-dagster
-dagster-dbt
-dagit
