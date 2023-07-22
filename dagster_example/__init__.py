@@ -3,6 +3,7 @@ import json
 
 from dagster import (
     Definitions,
+    DagsterEvent,
     asset,
     OpExecutionContext,
     op,
@@ -19,6 +20,7 @@ from dagster_dbt import (
     DbtCliResource,
     DagsterDbtTranslator,
     DagsterDbtCliHandledRuntimeError,
+    DagsterDbtCliRuntimeError,
     dbt_assets,
     DbtManifestAssetSelection,
     build_dbt_asset_selection,
@@ -37,19 +39,14 @@ class CustomDbtTranslator(DagsterDbtTranslator):
 
     @classmethod
     def get_group_name(cls, dbt_resource_props) -> str:
-        if len(dbt_resource_props["fqn"]) > 2:
-            return f"{dbt_resource_props['fqn'][1]}__{dbt_resource_props['fqn'][2]}"
-        return f"{dbt_resource_props['fqn'][0]}"
+        return dbt_resource_props["resource_type"]
+        # if len(dbt_resource_props["fqn"]) > 2:
+        #     return f"{dbt_resource_props['fqn'][1]}__{dbt_resource_props['fqn'][2]}"
+        # return f"{dbt_resource_props['fqn'][0]}"
 
 
 manifest_path = pathlib.Path("dbt_warehouse/target/manifest.json")
 DBT_MANIFEST = json.loads(manifest_path.read_text())
-
-
-class AssetOpConfig(Config):
-    select: str = "fqn:*"
-    vars: Dict[str, str] = {"foo": "bar"}
-    additional_args: List[str] = ["--full-refresh"]
 
 
 def prepare_dbt_args(command: str, args: str, vars: dict):
@@ -62,65 +59,18 @@ def prepare_dbt_args(command: str, args: str, vars: dict):
         cli_args.extend(["--vars", sanitized])
     return cli_args
 
-
-# @dbt_assets(manifest=DBT_MANIFEST, dagster_dbt_translator=CustomDbtTranslator)
-# def my_dbt_project(
-#     context: OpExecutionContext,
-#     config: AssetOpConfig,
-#     dbt: DbtCliResource,
-#     slack: SlackResource,
-# ):
-#     results = dbt.cli(
-#         [
-#             "build",
-#             "--resource-type",
-#             "model",
-#             "--resource-type",
-#             "seed",
-#             "--resource-type",
-#             "snapshot",
-#             *parse_vars(config.vars),
-#             *config.additional_args,
-#         ],
-#         manifest=DBT_MANIFEST,
-#         context=context,
-#     )
-#     yield from results.stream()
-#     context.log.info("yay")
-
-
 def yield_asset_materialization(dagster_event):
     if isinstance(dagster_event, Output):
-        manifest_node_info = DBT_MANIFEST["nodes"][
-            dagster_event.metadata["unique_id"].value
-        ]
+        node_id = dagster_event.metadata["unique_id"].value
+        # if not node_id.startswith("test"):
+        manifest_node_info = DBT_MANIFEST["nodes"][node_id]
         yield AssetMaterialization(
             asset_key=CustomDbtTranslator.get_asset_key(manifest_node_info),
             metadata=dagster_event.metadata,
         )
 
 
-def post_slack_alerts(run_results, context):
-    # parses the run_results and manifest and posts errors to Slack
-    slack_client = slack.get_client()
-    job_url = "https://whatnot.dagster.cloud/"
-    job_url += f"{prod}/runs/{context.run_id}"
-    # alerts = create_slack_alerts_from_dbt_results(
-    #     run_results=run_results, manifest=DBT_MANIFEST, job_url=job_url
-    # )
-    for alert in alerts:
-        context.log.info(
-            "Posting failure message for %s to %s: %s",
-            alert.name,
-            alert.channel,
-            alert.message_block,
-        )
-        slack_client.chat_postMessage(
-            channel=alert.channel, blocks=[alert.message_block]
-        )
-
-
-class DbtBuildOpConfig(Config):
+class DbtAdHocOpConfig(Config):
     """
     Configuration for dbt jobs that run through the dagster-dbt CLI.
 
@@ -138,8 +88,8 @@ class DbtBuildOpConfig(Config):
 
 
 @op
-def dbt_test_op(
-    context: OpExecutionContext, config: DbtBuildOpConfig, dbt: DbtCliResource
+def dbt_ad_hoc_cli_op(
+    context: OpExecutionContext, config: DbtAdHocOpConfig, dbt: DbtCliResource
 ):
     try:
         # prepare the args
@@ -160,6 +110,10 @@ def dbt_test_op(
         context.log.exception("Error encountered during dbt run.")
         run_success = False
 
+    except DagsterDbtCliRuntimeError as e:
+        context.log.exception("Error encountered during dbt run.")
+        run_success = False
+
     # do something with run results
     try:
         run_results = dbt_task.get_artifact("run_results.json")
@@ -177,12 +131,59 @@ def dbt_test_op(
 
 
 @job
-def dbt_test_job():
-    dbt_test_op()
+def dbt_ad_hoc_cli_job():
+    dbt_ad_hoc_cli_op()
+
+
+@dbt_assets(manifest=DBT_MANIFEST, dagster_dbt_translator=CustomDbtTranslator)
+def default_dbt_project_models(
+    context: OpExecutionContext,
+    dbt: DbtCliResource,
+):
+    try:
+        # prepare the args
+        args = [
+            "build",
+            "--resource-type",
+            "model",
+            "--resource-type",
+            "seed",
+            "--resource-type",
+            "snapshot",
+        ]
+        context.log.info("Received args: " + str(args))
+
+        # run the command
+        dbt_task = dbt.cli(args, manifest=DBT_MANIFEST, context=context)
+        yield from dbt_task.stream()
+
+        run_success = dbt_task.is_successful()
+
+    except DagsterDbtCliHandledRuntimeError as e:
+        context.log.exception("Error encountered during dbt run.")
+        run_success = False
+
+    except DagsterDbtCliRuntimeError as e:
+        context.log.exception("Error encountered during dbt run.")
+        run_success = False
+
+    # do something with run results
+    try:
+        run_results = dbt_task.get_artifact("run_results.json")
+        context.log.info("Creating Slack alerts from result failures")
+        # post_slack_alerts(run_results, context)
+    except FileNotFoundError:
+        context.log.info("No run results found.")
+
+    # succeed or fail the run
+    if not run_success:
+        raise Exception("dbt run was unsuccessful.")
+
+
 
 defs = Definitions(
-    assets=[],
-    jobs=BindResourcesToJobs([dbt_test_job]),
+    assets=[default_dbt_project_models],
+    jobs=BindResourcesToJobs([dbt_ad_hoc_cli_job]),
     resources={
         "dbt": DbtCliResource(project_dir="dbt_warehouse"),
     },
