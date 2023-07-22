@@ -174,21 +174,22 @@ def default_dbt_project_models(
         raise Exception("dbt run was unsuccessful.")
 
 
-group_1_asset_job = define_asset_job(
-    name="bespoke_asset_job",
-    selection=build_dbt_asset_selection(
-        dbt_assets=[default_dbt_project_models],
-        dbt_select="fqn:*",
-    ),
-)
+# todo: add these asset jobs once we have a way to run add CustomDbtTranslator
+# group_1_asset_job = define_asset_job(
+#     name="bespoke_asset_job",
+#     selection=build_dbt_asset_selection(
+#         dbt_assets=[default_dbt_project_models],
+#         dbt_select="fqn:*",
+#     ),
+# )
 
-group_2_asset_job = define_asset_job(
-    name="bespoke_asset_job",
-    selection=build_dbt_asset_selection(
-        dbt_assets=[default_dbt_project_models],
-        dbt_select="fqn:*",
-    ),
-)
+# group_2_asset_job = define_asset_job(
+#     name="bespoke_asset_job",
+#     selection=build_dbt_asset_selection(
+#         dbt_assets=[default_dbt_project_models],
+#         dbt_select="fqn:*",
+#     ),
+# )
 
 job_list = [
     dbt_ad_hoc_cli_job,
