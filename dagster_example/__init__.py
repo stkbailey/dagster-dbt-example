@@ -27,7 +27,6 @@ from typing import Mapping, Any, List, Dict
 
 # this "translator" object is used to map dbt nodes/metadata to dagster asset keys/metadata
 class CustomDbtTranslator(DagsterDbtTranslator):
-
     @classmethod
     def get_asset_key(cls, dbt_resource_props) -> AssetKey:
         "Use a database/schema/table designator."
@@ -58,23 +57,18 @@ def prepare_dbt_args(command: str, args: str, vars: dict):
     return cli_args
 
 
-def yield_asset_materialization(dagster_event):
-    if isinstance(dagster_event, Output):
-        node_id = dagster_event.metadata["unique_id"].value
-        # if not node_id.startswith("test"):
-        manifest_node_info = DBT_MANIFEST["nodes"][node_id]
-        yield AssetMaterialization(
-            asset_key=CustomDbtTranslator.get_asset_key(manifest_node_info),
-            metadata=dagster_event.metadata,
-        )
-
-
 class DbtAdHocOpConfig(Config):
     "Configuration for dbt jobs that are run as ops/jobs."
-    command: str = "run"            # The dbt command to run, such as `build`, `run`, `test`, or `seed`.
-    args: str = None                # Any additional command line arguments to pass to the job. To pass in `vars`, use the vars argument.
+    command: str = (
+        "run"  # The dbt command to run, such as `build`, `run`, `test`, or `seed`.
+    )
+    args: str = None  # Any additional command line arguments to pass to the job. To pass in `vars`, use the vars argument.
     fail_job_on_error: bool = True  # Whether the run itself should fail if the task fails. (e.g. could be used to ignore if a test fails)
-    vars: Dict[str, str] = {}       # A dictionary of variables to pass to the dbt command. These will be passed as `--vars` arguments.
+    vars: Dict[
+        str, str
+    ] = (
+        {}
+    )  # A dictionary of variables to pass to the dbt command. These will be passed as `--vars` arguments.
 
 
 class DbtAdHocAssetConfig(Config):
@@ -94,7 +88,14 @@ def dbt_ad_hoc_cli_op(
         args = prepare_dbt_args(config.command, config.args, config.vars)
         dbt_task = dbt.cli(args, manifest=DBT_MANIFEST, context=context)
         for dagster_event in dbt_task.stream():
-            yield_asset_materialization(dagster_event)
+            # todo: remove this once you can request this via `.stream(yield_asset_materialization=true)`
+            if isinstance(dagster_event, Output):
+                node_id = dagster_event.metadata["unique_id"].value
+                manifest_node_info = DBT_MANIFEST["nodes"][node_id]
+                yield AssetMaterialization(
+                    asset_key=CustomDbtTranslator.get_asset_key(manifest_node_info),
+                    metadata=dagster_event.metadata,
+                )
 
         run_success = dbt_task.is_successful()
 
@@ -150,6 +151,7 @@ def dbt_warehouse_assets(
     # succeed or fail the run
     if not run_success and config.fail_job_on_error:
         raise Exception("dbt run was unsuccessful.")
+
 
 all_dbt_assets_job = define_asset_job(
     name="all_dbt_assets_job",
